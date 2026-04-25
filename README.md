@@ -60,7 +60,7 @@ Current configuration:
   "min_duration_seconds": 10,
   "max_height": 1080,
   "crf": 23,
-  "preset": "slow",
+  "preset": "medium",
   "audio_mode": "aac",
   "audio_bitrate": "128k",
   "skip_if_codec": [],

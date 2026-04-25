@@ -123,7 +123,7 @@ Recommended example:
   "min_duration_seconds": 10,
   "max_height": 1080,
   "crf": 23,
-  "preset": "slow",
+  "preset": "medium",
   "audio_mode": "aac",
   "audio_bitrate": "128k",
   "skip_if_codec": [],
@@ -138,7 +138,7 @@ Validation rules:
 - `min_duration_seconds`: positive number, default `10`.
 - `max_height`: positive integer, default `1080`.
 - `crf`: integer, practical range `0..51`; default `23`.
-- `preset`: string accepted by ffmpeg/libx265, default `slow`.
+- `preset`: string accepted by ffmpeg/libx265, default `medium`.
 - `audio_mode`: `aac`, `copy`, or `auto`; default `aac`.
 - `audio_bitrate`: string like `128k`, used as the AAC ceiling/target bitrate.
 - `skip_if_codec`: optional list of lowercase codec names, only applied when the
@@ -248,7 +248,7 @@ Example:
 2026-04-25T12:00:00 [LOG] Writing run log to output/logs/compress_videos_20260425_120000.log
 2026-04-25T12:00:00 [SCAN] Found 3 supported files
 2026-04-25T12:00:01 [PROBE] input/My Video.mov: h264, 3840x2160, 125.4s, 820.0 MB
-2026-04-25T12:00:01 [COMPRESS] My Video.mov: libx265 crf=23 preset=slow, audio=aac 128k, scaling to 1080p
+2026-04-25T12:00:01 [COMPRESS] My Video.mov: libx265 crf=23 preset=medium, audio=aac 128k, scaling to 1080p
 2026-04-25T12:03:20 [KEEP] My Video.mov: 820.0 MB -> 214.0 MB
 2026-04-25T12:03:20 [SKIP] Small Clip.mp4: below min file size; copied original
 2026-04-25T12:03:21 [FALLBACK] Archive.mkv: compressed file was larger; copied original

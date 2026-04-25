@@ -5,7 +5,7 @@
   "min_duration_seconds": null,
   "max_height": 1080,
   "crf": 23,
-  "preset": "slow",
+  "preset": "medium",
   "audio_mode": "aac",
   "audio_bitrate": "128k",
   "skip_if_codec": [],
