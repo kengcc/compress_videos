@@ -730,6 +730,8 @@ def log_summary(results: list[ProcessResult]) -> None:
     ]
     log("")
     log_summary_table(rows)
+    log("")
+    log_total_sizes(results)
 
 
 def summarize_status(result: ProcessResult) -> str:
@@ -745,6 +747,17 @@ def format_size(size: int | None) -> str:
     if size is None:
         return "-"
     return human_size(size)
+
+
+def log_total_sizes(results: list[ProcessResult]) -> None:
+    total_input_size = sum(
+        result.input_size for result in results if result.input_size is not None
+    )
+    total_output_size = sum(
+        result.output_size for result in results if result.output_size is not None
+    )
+    log(f"Total original size: {human_size(total_input_size)}")
+    log(f"Total compressed size: {human_size(total_output_size)}")
 
 
 def log_summary_table(rows: list[tuple[str, str, str, str]]) -> None:
