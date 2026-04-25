@@ -13,7 +13,7 @@ from typing import Any
 
 
 SUPPORTED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v"}
-DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{1,2}(?:-\d{2})?")
 NUMBERED_NAME_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2}) (?P<num>\d+)(?P<ext>\.[^.]+)$")
 
 
