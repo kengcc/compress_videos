@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -426,7 +427,7 @@ def process_file(input_path: Path, config: dict[str, Any]) -> ProcessResult:
 
         should_encode, reason = should_compress(input_path, metadata, config)
         if not should_encode:
-            copy_original(input_path, final_output_path)
+            copy_original(input_path, final_output_path, metadata.get("created_at"))
             log(f"[SKIP] {input_path.name}: {reason}; copied original")
             return ProcessResult(
                 "skipped",
@@ -440,7 +441,7 @@ def process_file(input_path: Path, config: dict[str, Any]) -> ProcessResult:
             input_path, sample_output_path, metadata, config
         )
         if preflight_reason is not None:
-            copy_original(input_path, final_output_path)
+            copy_original(input_path, final_output_path, metadata.get("created_at"))
             log(f"[SKIP] {input_path.name}: {preflight_reason}; copied original")
             return ProcessResult(
                 "skipped",
@@ -460,7 +461,12 @@ def process_file(input_path: Path, config: dict[str, Any]) -> ProcessResult:
             f"{describe_audio_mode(metadata, config)}{scale_note}"
         )
         compress_video(input_path, temp_output_path, metadata, config)
-        result = finalize_output(input_path, temp_output_path, final_output_path)
+        result = finalize_output(
+            input_path,
+            temp_output_path,
+            final_output_path,
+            metadata.get("created_at"),
+        )
         return result
     except (ProbeError, EncodeError) as exc:
         return fallback_copy(input_path, final_output_path, temp_output_path, str(exc))
@@ -492,6 +498,8 @@ def probe_video(path: Path) -> dict[str, Any]:
         "json",
         "-show_format",
         "-show_streams",
+        "-show_entries",
+        "format_tags=creation_time:stream_tags=creation_time",
         str(path),
     ]
     result = subprocess.run(
@@ -509,7 +517,9 @@ def probe_video(path: Path) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise ProbeError("ffprobe returned invalid JSON") from exc
 
-    return parse_ffprobe_metadata(data)
+    metadata = parse_ffprobe_metadata(data)
+    metadata["created_at"] = probe_creation_time_from_ffprobe(data) or probe_creation_time_from_filesystem(path)
+    return metadata
 
 
 def parse_ffprobe_metadata(data: dict[str, Any]) -> dict[str, Any]:
@@ -590,6 +600,95 @@ def parse_optional_int(*values: Any) -> int | None:
         except (TypeError, ValueError):
             continue
     return None
+
+
+def probe_creation_time_from_ffprobe(data: dict[str, Any]) -> datetime | None:
+    for value in iter_creation_time_values(data):
+        parsed = parse_creation_time(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def probe_creation_time_from_filesystem(path: Path) -> datetime:
+    stat_result = path.stat()
+    timestamp = getattr(stat_result, "st_birthtime", stat_result.st_mtime)
+    return datetime.fromtimestamp(timestamp).astimezone()
+
+
+def iter_creation_time_values(data: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    format_data = data.get("format")
+    if isinstance(format_data, dict):
+        tags = format_data.get("tags")
+        if isinstance(tags, dict):
+            value = tags.get("creation_time")
+            if isinstance(value, str) and value.strip():
+                values.append(value)
+
+    streams = data.get("streams")
+    if isinstance(streams, list):
+        for stream in streams:
+            if not isinstance(stream, dict):
+                continue
+            tags = stream.get("tags")
+            if not isinstance(tags, dict):
+                continue
+            value = tags.get("creation_time")
+            if isinstance(value, str) and value.strip():
+                values.append(value)
+
+    return values
+
+
+def parse_creation_time(value: str) -> datetime | None:
+    text = value.strip()
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return parsed
+
+
+def format_creation_time(created_at: datetime) -> str:
+    return created_at.astimezone().replace(microsecond=0).isoformat()
+
+
+def preserve_file_times(
+    output_path: Path,
+    source_path: Path,
+    created_at: datetime | None = None,
+) -> None:
+    stat_result = source_path.stat()
+    os.utime(
+        output_path,
+        ns=(stat_result.st_atime_ns, stat_result.st_mtime_ns),
+        follow_symlinks=False,
+    )
+
+    if created_at is None or sys.platform != "darwin":
+        return
+
+    setfile_path = shutil.which("SetFile")
+    if not setfile_path:
+        return
+
+    timestamp_text = created_at.astimezone().strftime("%m/%d/%Y %H:%M:%S")
+    try:
+        subprocess.run(
+            [setfile_path, "-d", timestamp_text, str(output_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError:
+        log(f"[WARN] Could not set creation date for {output_path}")
 
 
 def should_compress(
@@ -792,6 +891,10 @@ def build_ffmpeg_command(
     else:
         command.extend(["-c:a", "copy"])
 
+    created_at = metadata.get("created_at")
+    if created_at is not None:
+        command.extend(["-metadata", f"creation_time={format_creation_time(created_at)}"])
+
     command.append(str(output_path))
     return command
 
@@ -859,21 +962,30 @@ def compress_video(
         raise EncodeError("ffmpeg did not produce a valid output file")
 
 
-def copy_original(input_path: Path, final_output_path: Path) -> None:
+def copy_original(
+    input_path: Path,
+    final_output_path: Path,
+    created_at: datetime | None = None,
+) -> None:
     final_output_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(input_path, final_output_path)
+    if created_at is None:
+        created_at = probe_creation_time_from_filesystem(input_path)
+    preserve_file_times(final_output_path, input_path, created_at)
 
 
 def finalize_output(
     input_path: Path,
     temp_output_path: Path,
     final_output_path: Path,
+    created_at: datetime | None = None,
 ) -> ProcessResult:
     input_size = input_path.stat().st_size
     output_size = temp_output_path.stat().st_size
 
     if output_size < input_size:
         os.replace(temp_output_path, final_output_path)
+        preserve_file_times(final_output_path, input_path, created_at)
         log(
             f"[KEEP] {input_path.name}: "
             f"{human_size(input_size)} -> {human_size(output_size)}"
@@ -887,7 +999,7 @@ def finalize_output(
         )
 
     remove_if_exists(temp_output_path)
-    copy_original(input_path, final_output_path)
+    copy_original(input_path, final_output_path, created_at)
     log(
         f"[FALLBACK] {input_path.name}: compressed file was larger "
         f"({human_size(input_size)} -> {human_size(output_size)}); copied original"
@@ -906,10 +1018,11 @@ def fallback_copy(
     final_output_path: Path,
     temp_output_path: Path,
     reason: str,
+    created_at: datetime | None = None,
 ) -> ProcessResult:
     remove_if_exists(temp_output_path)
     try:
-        copy_original(input_path, final_output_path)
+        copy_original(input_path, final_output_path, created_at)
     except OSError as exc:
         log(f"[ERROR] {input_path.name}: {reason}; copy failed: {exc}")
         return ProcessResult("failed", input_path, f"{reason}; copy failed: {exc}")
