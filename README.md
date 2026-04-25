@@ -56,14 +56,14 @@ Current configuration:
 {
   "input_dir": "./input",
   "output_dir": "./output",
-  "min_file_size_mb": null,
-  "min_duration_seconds": null,
+  "min_file_size_mb": 15,
+  "min_duration_seconds": 10,
   "max_height": 1080,
-  "crf": 22,
+  "crf": 23,
   "preset": "slow",
-  "audio_mode": "auto",
+  "audio_mode": "aac",
   "audio_bitrate": "128k",
-  "skip_if_codec": ["hevc"],
+  "skip_if_codec": [],
   "supported_extensions": [".mp4", ".mov", ".avi", ".mkv", ".m4v"]
 }
 ```
@@ -72,17 +72,33 @@ Important options:
 
 - `input_dir`: folder containing source videos.
 - `output_dir`: folder for compressed or copied videos and run logs.
-- `min_file_size_mb`: skip files smaller than this value when set.
-- `min_duration_seconds`: skip files shorter than this value when set.
+- `min_file_size_mb`: skip files smaller than this value before encoding.
+- `min_duration_seconds`: skip files shorter than this value before encoding.
 - `max_height`: downscale videos taller than this height.
 - `crf`: x265 quality value. Lower means higher quality and larger files.
 - `preset`: x265 encode speed/efficiency preset.
-- `audio_mode`: `auto` caps high-bitrate audio, `copy` preserves source audio,
-  and `aac` always re-encodes audio.
-- `audio_bitrate`: AAC audio bitrate cap when `audio_mode` is `auto`, or target
-  bitrate when `audio_mode` is `aac`.
-- `skip_if_codec`: codecs to skip unless size rules make them eligible.
+- `audio_mode`: `aac` caps audio at `audio_bitrate`, `copy` preserves source
+  audio, and `auto` behaves like `aac` but keeps a conservative fallback for
+  unknown source bitrate.
+- `audio_bitrate`: AAC audio bitrate ceiling when `audio_mode` is `aac` or the
+  cap used by `auto`.
+- `skip_if_codec`: optional codec names to skip only when the file is already
+  small enough.
 - `supported_extensions`: file extensions scanned in the input folder.
+
+## Skip Heuristics
+
+The compressor avoids wasting time on files that are already small or low-bitrate:
+
+- files shorter than `min_duration_seconds`
+- files smaller than `min_file_size_mb`
+- 360p or 480p clips that are already small
+- 480p clips with very low bitrate
+- 720p clips with low bitrate and modest file size
+- 1080p clips with reasonably low bitrate and modest file size
+
+These are the main guards that keep the encoder focused on files that are likely
+to shrink.
 
 ## Outcomes
 

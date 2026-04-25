@@ -4,10 +4,10 @@
   "min_file_size_mb": null,
   "min_duration_seconds": null,
   "max_height": 1080,
-  "crf": 22,
+  "crf": 23,
   "preset": "slow",
-  "audio_mode": "auto",
+  "audio_mode": "aac",
   "audio_bitrate": "128k",
-  "skip_if_codec": ["hevc"],
+  "skip_if_codec": [],
   "supported_extensions": [".mp4", ".mov", ".avi", ".mkv", ".m4v"]
 }

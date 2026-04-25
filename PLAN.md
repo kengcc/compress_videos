@@ -7,7 +7,7 @@ Build a small two-file tool:
 - `compress_videos.py`: main Python script using only the standard library plus
   system `ffmpeg` and `ffprobe`.
 - `config.json`: user-editable settings for folders, thresholds, codec choices,
-  quality, scaling, audio handling, and supported extensions.
+  quality, scaling, audio handling, skip heuristics, and supported extensions.
 
 The script scans `./input`, produces one output file per supported input in
 `./output`, keeps filenames unchanged, never modifies `./input`, overwrites
@@ -76,22 +76,19 @@ Core functions:
 - `should_compress(path, metadata, config) -> tuple[bool, str]`
   - Return decision and reason.
   - Skip compression when:
-    - file size is below `min_file_size_mb`, if configured
-    - duration is below `min_duration_seconds`, if configured
-    - codec is in `skip_if_codec` and file is not considered large
-  - Practical HEVC rule:
-    - If codec is skipped, copy original unless the file exceeds
-      `min_file_size_mb` when that threshold is configured.
-    - If no size threshold is configured, skipped codecs are copied as-is.
+    - file size is below `min_file_size_mb`
+    - duration is below `min_duration_seconds`
+    - resolution and bitrate indicate the file is already small enough
+  - Practical codec rule:
+    - Codec names can be used as an extra size guard, but not as a blanket bypass.
 
 - `build_ffmpeg_command(input_path, output_path, metadata, config) -> list[str]`
   - Use argument list, never shell string, so filenames with spaces are safe.
   - Include `-y` to overwrite output.
   - Include `-map 0:v:0 -map 0:a?` to keep primary video and optional audio.
   - Encode video with `libx265`, configured CRF and preset.
-  - Use automatic audio handling by default: copy audio at or below the configured
-    bitrate cap, and re-encode higher-bitrate audio to AAC at that cap.
-  - Allow explicit audio copy or AAC re-encoding when selected.
+  - Treat `audio_bitrate` as an audio ceiling: re-encode to AAC only when the
+    source audio bitrate is above the ceiling, otherwise copy the original audio.
   - Add `-tag:v hvc1` for Apple compatibility.
   - Add scaling filter only when input height exceeds `max_height`.
 
@@ -122,14 +119,14 @@ Recommended example:
 {
   "input_dir": "./input",
   "output_dir": "./output",
-  "min_file_size_mb": null,
-  "min_duration_seconds": null,
+  "min_file_size_mb": 15,
+  "min_duration_seconds": 10,
   "max_height": 1080,
-  "crf": 22,
+  "crf": 23,
   "preset": "slow",
-  "audio_mode": "auto",
+  "audio_mode": "aac",
   "audio_bitrate": "128k",
-  "skip_if_codec": ["hevc"],
+  "skip_if_codec": [],
   "supported_extensions": [".mp4", ".mov", ".avi", ".mkv", ".m4v"]
 }
 ```
@@ -137,16 +134,30 @@ Recommended example:
 Validation rules:
 
 - `input_dir` and `output_dir`: strings.
-- `min_file_size_mb`: positive number or `null`.
-- `min_duration_seconds`: positive number or `null`.
+- `min_file_size_mb`: positive number, default `15`.
+- `min_duration_seconds`: positive number, default `10`.
 - `max_height`: positive integer, default `1080`.
-- `crf`: integer, practical range `0..51`; default `22`.
+- `crf`: integer, practical range `0..51`; default `23`.
 - `preset`: string accepted by ffmpeg/libx265, default `slow`.
-- `audio_mode`: `auto`, `copy`, or `aac`; default `auto`.
-- `audio_bitrate`: string like `128k`, used as the automatic audio cap or AAC
-  target bitrate.
-- `skip_if_codec`: list of lowercase codec names.
+- `audio_mode`: `aac`, `copy`, or `auto`; default `aac`.
+- `audio_bitrate`: string like `128k`, used as the AAC ceiling/target bitrate.
+- `skip_if_codec`: optional list of lowercase codec names, only applied when the
+  file is already small enough.
 - `supported_extensions`: non-empty list of extensions.
+
+## Skip Heuristics
+
+The compressor avoids wasting time on files that are already small or low-bitrate:
+
+- files shorter than `min_duration_seconds`
+- files smaller than `min_file_size_mb`
+- 360p or 480p clips that are already small
+- 480p clips with very low bitrate
+- 720p clips with low bitrate and modest file size
+- 1080p clips with reasonably low bitrate and modest file size
+
+These are the main guards that keep the encoder focused on files that are likely
+to shrink.
 
 ## ffprobe and ffmpeg Details
 
@@ -194,16 +205,9 @@ ffmpeg -y
   -preset <preset>
   -tag:v hvc1
   [-vf scale=-2:<max_height>]
-  -c:a copy
+  -c:a aac
+  -b:a <audio_bitrate>
   <temp_output_file>
-```
-
-If `audio_mode` is set to `aac`, or if `audio_mode` is `auto` and the source
-audio bitrate is above `audio_bitrate`, use this audio command instead:
-
-```text
--c:a aac
--b:a <audio_bitrate>
 ```
 
 Temporary output naming:
@@ -224,10 +228,8 @@ For each supported input:
    - Copy original to output.
 4. If duration is below configured minimum duration:
    - Copy original to output.
-5. If codec is in `skip_if_codec`:
-   - If `min_file_size_mb` is configured and file size is greater than or equal
-     to that threshold, allow compression.
-   - Otherwise copy original to output.
+5. If resolution and bitrate indicate the file is already small enough:
+   - Copy original to output.
 6. Otherwise compress.
 7. Compare compressed temp file size against input size.
 8. Keep compressed output only if it is smaller.
@@ -246,7 +248,7 @@ Example:
 2026-04-25T12:00:00 [LOG] Writing run log to output/logs/compress_videos_20260425_120000.log
 2026-04-25T12:00:00 [SCAN] Found 3 supported files
 2026-04-25T12:00:01 [PROBE] input/My Video.mov: h264, 3840x2160, 125.4s, 820.0 MB
-2026-04-25T12:00:01 [COMPRESS] My Video.mov: libx265 crf=22 preset=slow, audio=copy, scaling to 1080p
+2026-04-25T12:00:01 [COMPRESS] My Video.mov: libx265 crf=23 preset=slow, audio=aac 128k, scaling to 1080p
 2026-04-25T12:03:20 [KEEP] My Video.mov: 820.0 MB -> 214.0 MB
 2026-04-25T12:03:20 [SKIP] Small Clip.mp4: below min file size; copied original
 2026-04-25T12:03:21 [FALLBACK] Archive.mkv: compressed file was larger; copied original
@@ -283,11 +285,10 @@ Handle explicitly:
 - Unsupported extensions are ignored.
 - Case-insensitive extensions are supported.
 - Compression larger than source always falls back to original.
-- HEVC files are skipped by default unless the configured size threshold marks
-  them large enough to retry.
-- Audio is automatically copied when it is already at or below the configured
-  audio bitrate cap because many existing phone videos have low-bitrate AAC
-  audio, and re-encoding those to `128k` can increase size.
+- HEVC files are no longer skipped by default. Codec is one signal among file
+  size, duration, resolution, and bitrate.
+- Audio is copied when the source bitrate is at or below the ceiling so low
+  bitrate clips do not get re-encoded upward.
 
 ## Tradeoffs and Assumptions
 
@@ -297,8 +298,7 @@ Handle explicitly:
   though the encoded video becomes HEVC.
 - The script will not preserve all metadata, subtitles, chapters, or every stream
   in v1.
-- HEVC skipping is intentionally practical: codec alone is not enough to prove
-  efficiency, but it is a reasonable default.
+- Heuristics are intentionally practical instead of optimal.
 - No third-party Python packages are used.
 - No automatic installation of `ffmpeg` or `ffprobe`; the user must install them
   separately.
@@ -370,7 +370,7 @@ Manual acceptance scenarios:
 - A `720p` or `1080p` file compresses without scaling.
 - A tiny file is copied when `min_file_size_mb` is configured.
 - A very short file is copied when `min_duration_seconds` is configured.
-- An HEVC file is copied by default.
+- An HEVC file is copied only when the heuristics say it is already small enough.
 - A compressed output larger than the input is deleted and replaced with the
   original.
 - A filename with spaces is processed correctly.

@@ -16,14 +16,14 @@ from typing import Any
 DEFAULT_CONFIG: dict[str, Any] = {
     "input_dir": "./input",
     "output_dir": "./output",
-    "min_file_size_mb": None,
-    "min_duration_seconds": None,
+    "min_file_size_mb": 15,
+    "min_duration_seconds": 10,
     "max_height": 1080,
-    "crf": 22,
+    "crf": 23,
     "preset": "slow",
-    "audio_mode": "auto",
+    "audio_mode": "aac",
     "audio_bitrate": "128k",
-    "skip_if_codec": ["hevc"],
+    "skip_if_codec": [],
     "supported_extensions": [".mp4", ".mov", ".avi", ".mkv", ".m4v"],
 }
 
@@ -405,6 +405,7 @@ def parse_ffprobe_metadata(data: dict[str, Any]) -> dict[str, Any]:
         "duration": duration,
         "bit_rate": bit_rate,
         "audio_bit_rate": audio_bit_rate,
+        "has_audio_stream": audio_stream is not None,
     }
 
 
@@ -433,28 +434,62 @@ def parse_optional_int(*values: Any) -> int | None:
 def should_compress(
     path: Path, metadata: dict[str, Any], config: dict[str, Any]
 ) -> tuple[bool, str]:
-    file_size_mb = path.stat().st_size / (1024 * 1024)
-    min_file_size_mb = config["min_file_size_mb"]
-    min_duration_seconds = config["min_duration_seconds"]
+    # Skip logic intentionally disabled so every supported input is processed.
+    # The previous heuristics are left here commented out for easy restoration.
+    #
+    # file_size_mb = path.stat().st_size / (1024 * 1024)
+    # min_file_size_mb = config["min_file_size_mb"]
+    # min_duration_seconds = config["min_duration_seconds"]
+    # duration = metadata["duration"]
+    # codec = metadata["codec"]
+    #
+    # if min_file_size_mb is not None and file_size_mb < min_file_size_mb:
+    #     return False, f"below min file size ({human_size(path.stat().st_size)})"
+    #
+    # if (
+    #     min_duration_seconds is not None
+    #     and duration is not None
+    #     and duration < min_duration_seconds
+    # ):
+    #     return False, f"below min duration ({duration:.1f}s)"
+    #
+    # reason = should_skip_by_resolution_and_bitrate(metadata, file_size_mb)
+    # if reason is not None:
+    #     return False, reason
+    #
+    # if codec in config["skip_if_codec"]:
+    #     if min_file_size_mb is not None and file_size_mb <= min_file_size_mb:
+    #         return False, f"codec {codec} and file is already small enough"
+    #     if min_file_size_mb is None and file_size_mb < 20:
+    #         return False, f"codec {codec} and file is already small enough"
+
+    return True, "compression enabled for all inputs"
+
+
+def should_skip_by_resolution_and_bitrate(
+    metadata: dict[str, Any], file_size_mb: float
+) -> str | None:
+    height = metadata["height"]
+    bit_rate = metadata["bit_rate"] or 0
     duration = metadata["duration"]
-    codec = metadata["codec"]
+    file_size_bytes = int(file_size_mb * 1024 * 1024)
 
-    if min_file_size_mb is not None and file_size_mb < min_file_size_mb:
-        return False, f"below min file size ({human_size(path.stat().st_size)})"
+    if duration is not None and duration < 15:
+        return f"short clip ({duration:.1f}s)"
 
-    if (
-        min_duration_seconds is not None
-        and duration is not None
-        and duration < min_duration_seconds
-    ):
-        return False, f"below min duration ({duration:.1f}s)"
+    if height <= 480 and file_size_mb < 15:
+        return f"low resolution and already small ({human_size(file_size_bytes)})"
 
-    if codec in config["skip_if_codec"]:
-        if min_file_size_mb is not None and file_size_mb >= min_file_size_mb:
-            return True, "codec is skipped, but file is large enough to retry"
-        return False, f"codec {codec} is already efficient"
+    if height <= 480 and bit_rate and bit_rate < 1_200_000:
+        return f"480p bitrate already low ({bit_rate / 1_000_000:.2f} Mbps)"
 
-    return True, "eligible for compression"
+    if height <= 720 and file_size_mb < 20 and bit_rate and bit_rate < 2_500_000:
+        return f"720p bitrate already low ({bit_rate / 1_000_000:.2f} Mbps)"
+
+    if height <= 1080 and file_size_mb < 25 and bit_rate and bit_rate < 4_500_000:
+        return f"1080p bitrate already reasonable ({bit_rate / 1_000_000:.2f} Mbps)"
+
+    return None
 
 
 def build_ffmpeg_command(
@@ -496,19 +531,42 @@ def build_ffmpeg_command(
 
 def should_reencode_audio(metadata: dict[str, Any], config: dict[str, Any]) -> bool:
     audio_mode = config["audio_mode"]
-    if audio_mode == "aac":
-        return True
     if audio_mode == "copy":
+        return False
+    if audio_mode not in {"aac", "auto"}:
+        return False
+
+    if not metadata["has_audio_stream"]:
         return False
 
     audio_bit_rate = metadata["audio_bit_rate"]
-    return audio_bit_rate is not None and audio_bit_rate > config["audio_bitrate_bps"]
+    if audio_bit_rate is None:
+        return False
+    return audio_bit_rate > config["audio_bitrate_bps"]
 
 
 def describe_audio_mode(metadata: dict[str, Any], config: dict[str, Any]) -> str:
+    audio_mode = config["audio_mode"]
+    if audio_mode == "copy":
+        return "audio=copy"
     if should_reencode_audio(metadata, config):
         return f"audio=aac {config['audio_bitrate']}"
-    return "audio=copy"
+
+    if not metadata["has_audio_stream"]:
+        return "audio=copy (no audio stream)"
+
+    audio_bit_rate = metadata["audio_bit_rate"]
+    if audio_bit_rate is None:
+        return "audio=copy (unknown bitrate)"
+    return f"audio=copy ({human_bitrate(audio_bit_rate)} <= {config['audio_bitrate']})"
+
+
+def human_bitrate(bits_per_second: int) -> str:
+    if bits_per_second >= 1_000_000:
+        return f"{bits_per_second / 1_000_000:.1f} Mbps"
+    if bits_per_second >= 1_000:
+        return f"{bits_per_second / 1_000:.0f} kbps"
+    return f"{bits_per_second} bps"
 
 
 def compress_video(
