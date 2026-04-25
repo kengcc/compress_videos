@@ -719,30 +719,51 @@ def log_summary(results: list[ProcessResult]) -> None:
         f"retained={counts['retained']} "
         f"failed={counts['failed']}"
     )
-    log_result_group("CONVERTED", results, "compressed")
-    log_result_group("SKIPPED", results, "skipped")
-    log_result_group("RETAINED", results, "retained")
-    log_result_group("FAILED", results, "failed")
-
-
-def log_result_group(
-    label: str, results: list[ProcessResult], status: str
-) -> None:
-    matching = [result for result in results if result.status == status]
-    log(f"[SUMMARY:{label}] {len(matching)} file(s)")
-    for result in matching:
-        log(f"  - {format_result(result)}")
-
-
-def format_result(result: ProcessResult) -> str:
-    parts = [result.path.name]
-    if result.input_size is not None and result.output_size is not None:
-        parts.append(
-            f"{human_size(result.input_size)} -> {human_size(result.output_size)}"
+    rows = [
+        (
+            result.path.name,
+            summarize_status(result),
+            format_size(result.input_size),
+            format_size(result.output_size),
         )
-    if result.reason:
-        parts.append(result.reason.replace("\n", " | "))
-    return ": ".join(parts)
+        for result in results
+    ]
+    log("")
+    log_summary_table(rows)
+
+
+def summarize_status(result: ProcessResult) -> str:
+    return {
+        "compressed": "compress",
+        "skipped": "skip",
+        "retained": "keep",
+        "failed": "fail",
+    }.get(result.status, result.status)
+
+
+def format_size(size: int | None) -> str:
+    if size is None:
+        return "-"
+    return human_size(size)
+
+
+def log_summary_table(rows: list[tuple[str, str, str, str]]) -> None:
+    headers = ("filename", "status", "original size", "compressed size")
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, value in enumerate(row):
+            widths[index] = max(widths[index], len(value))
+
+    def emit_row(values: tuple[str, str, str, str]) -> None:
+        line = "  ".join(
+            value.ljust(widths[index]) for index, value in enumerate(values)
+        )
+        log(line)
+
+    emit_row(headers)
+    log("  ".join("-" * width for width in widths))
+    for row in rows:
+        emit_row(row)
 
 
 def log(message: str) -> None:
