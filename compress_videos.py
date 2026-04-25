@@ -28,7 +28,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "skip_if_codec": [],
     "skip_codec_default_max_size_mb": 20,
     "skip_existing_outputs": True,
-    "enable_smart_skip": True,
+    "enable_smart_skip": False,
     "smart_skip_short_duration_seconds": 5,
     "smart_skip_low_resolution_height": 360,
     "smart_skip_low_resolution_size_mb": 5,
