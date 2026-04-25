@@ -64,12 +64,27 @@ Current configuration:
   "audio_mode": "aac",
   "audio_bitrate": "128k",
   "skip_if_codec": [],
+  "skip_codec_default_max_size_mb": 20,
   "skip_existing_outputs": true,
   "enable_smart_skip": true,
+  "smart_skip_short_duration_seconds": 5,
+  "smart_skip_low_resolution_height": 360,
+  "smart_skip_low_resolution_size_mb": 5,
+  "smart_skip_480p_height": 480,
+  "smart_skip_480p_max_bitrate": "500k",
+  "smart_skip_720p_height": 720,
+  "smart_skip_720p_max_size_mb": 8,
+  "smart_skip_720p_max_bitrate": "1000k",
+  "smart_skip_1080p_height": 1080,
+  "smart_skip_1080p_max_size_mb": 12,
+  "smart_skip_1080p_max_bitrate": "1800k",
   "enable_sample_preflight": false,
+  "sample_preflight_codecs": ["hevc"],
+  "sample_preflight_min_duration_seconds": 5,
   "sample_preflight_seconds": 8,
   "sample_preflight_min_ratio": 0.98,
   "parallel_jobs": 1,
+  "error_log_line_count": 8,
   "supported_extensions": [".mp4", ".mov", ".avi", ".mkv", ".m4v"]
 }
 ```
@@ -92,18 +107,42 @@ Important options:
   cap used by `auto`.
 - `skip_if_codec`: optional codec names to skip only when the file is already
   small enough.
+- `skip_codec_default_max_size_mb`: size cutoff used with `skip_if_codec` when
+  `min_file_size_mb` is `null`, or `null` to disable this codec-size rule.
 - `skip_existing_outputs`: skip an input when a newer non-empty output file with
   the same name already exists.
 - `enable_smart_skip`: skip files that are likely to waste encode time because
   they are already short, small, low-resolution, or low-bitrate.
+- `smart_skip_short_duration_seconds`: skip clips shorter than this value, or
+  `null` to disable this smart-skip rule.
+- `smart_skip_low_resolution_height`: height cutoff for the low-resolution smart
+  skip rule.
+- `smart_skip_low_resolution_size_mb`: skip low-resolution clips smaller than
+  this value, or `null` to disable this smart-skip rule.
+- `smart_skip_480p_height` and `smart_skip_480p_max_bitrate`: skip files at or
+  below this height when bitrate is below this value. Set the bitrate to `null`
+  to disable this smart-skip rule.
+- `smart_skip_720p_height`, `smart_skip_720p_max_size_mb`, and
+  `smart_skip_720p_max_bitrate`: skip files at or below this height only when
+  both size and bitrate are below these values. Set either size or bitrate to
+  `null` to disable this smart-skip rule.
+- `smart_skip_1080p_height`, `smart_skip_1080p_max_size_mb`, and
+  `smart_skip_1080p_max_bitrate`: skip files at or below this height only when
+  both size and bitrate are below these values. Set either size or bitrate to
+  `null` to disable this smart-skip rule.
 - `enable_sample_preflight`: for HEVC inputs, encode a short sample first and
   skip the full encode if the sample does not predict useful savings.
+- `sample_preflight_codecs`: codec names that are eligible for sample preflight.
+- `sample_preflight_min_duration_seconds`: minimum duration required before
+  sample preflight runs, or `null` to allow any duration.
 - `sample_preflight_seconds`: number of seconds encoded when sample preflight is
   enabled.
 - `sample_preflight_min_ratio`: sample preflight skips the full encode when the
   projected output is at least this fraction of the original size.
 - `parallel_jobs`: number of videos to process at the same time. Keep this low
   because x265 already uses multiple CPU threads per file.
+- `error_log_line_count`: number of trailing ffmpeg stderr lines included when
+  an encode or sample preflight fails.
 - `supported_extensions`: file extensions scanned in the input folder.
 
 ## Skip Heuristics
@@ -113,10 +152,16 @@ that are already small or low-bitrate:
 
 - files shorter than `min_duration_seconds`, when configured
 - files smaller than `min_file_size_mb`, when configured
-- 360p or 480p clips that are already small
-- 480p clips with very low bitrate
-- 720p clips with low bitrate and modest file size
-- 1080p clips with reasonably low bitrate and modest file size
+- clips shorter than `smart_skip_short_duration_seconds`
+- low-resolution clips smaller than `smart_skip_low_resolution_size_mb`
+- clips at or below `smart_skip_480p_height` and below
+  `smart_skip_480p_max_bitrate`
+- clips at or below `smart_skip_720p_height` and below both
+  `smart_skip_720p_max_size_mb` and
+  `smart_skip_720p_max_bitrate`
+- clips at or below `smart_skip_1080p_height` and below both
+  `smart_skip_1080p_max_size_mb` and
+  `smart_skip_1080p_max_bitrate`
 
 These are the main guards that keep the encoder focused on files that are likely
 to shrink.

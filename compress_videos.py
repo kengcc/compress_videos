@@ -26,12 +26,27 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "audio_mode": "aac",
     "audio_bitrate": "128k",
     "skip_if_codec": [],
+    "skip_codec_default_max_size_mb": 20,
     "skip_existing_outputs": True,
     "enable_smart_skip": True,
+    "smart_skip_short_duration_seconds": 5,
+    "smart_skip_low_resolution_height": 360,
+    "smart_skip_low_resolution_size_mb": 5,
+    "smart_skip_480p_height": 480,
+    "smart_skip_480p_max_bitrate": "500k",
+    "smart_skip_720p_height": 720,
+    "smart_skip_720p_max_size_mb": 8,
+    "smart_skip_720p_max_bitrate": "1000k",
+    "smart_skip_1080p_height": 1080,
+    "smart_skip_1080p_max_size_mb": 12,
+    "smart_skip_1080p_max_bitrate": "1800k",
     "enable_sample_preflight": False,
+    "sample_preflight_codecs": ["hevc"],
+    "sample_preflight_min_duration_seconds": 5,
     "sample_preflight_seconds": 8,
     "sample_preflight_min_ratio": 0.98,
     "parallel_jobs": 1,
+    "error_log_line_count": 8,
     "supported_extensions": [".mp4", ".mov", ".avi", ".mkv", ".m4v"],
 }
 
@@ -165,12 +180,58 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         validated["audio_bitrate"], "audio_bitrate"
     )
     validated["skip_if_codec"] = validate_string_list(validated, "skip_if_codec")
+    validated["skip_codec_default_max_size_mb"] = validate_optional_positive_number(
+        validated, "skip_codec_default_max_size_mb"
+    )
     validated["skip_existing_outputs"] = validate_bool(
         validated, "skip_existing_outputs"
     )
     validated["enable_smart_skip"] = validate_bool(validated, "enable_smart_skip")
+    validated["smart_skip_short_duration_seconds"] = (
+        validate_optional_positive_number(
+            validated, "smart_skip_short_duration_seconds"
+        )
+    )
+    validated["smart_skip_low_resolution_height"] = validate_positive_int(
+        validated, "smart_skip_low_resolution_height"
+    )
+    validated["smart_skip_low_resolution_size_mb"] = (
+        validate_optional_positive_number(validated, "smart_skip_low_resolution_size_mb")
+    )
+    validated["smart_skip_480p_height"] = validate_positive_int(
+        validated, "smart_skip_480p_height"
+    )
+    validated["smart_skip_480p_max_bitrate_bps"] = validate_optional_bitrate(
+        validated, "smart_skip_480p_max_bitrate"
+    )
+    validated["smart_skip_720p_height"] = validate_positive_int(
+        validated, "smart_skip_720p_height"
+    )
+    validated["smart_skip_720p_max_size_mb"] = validate_optional_positive_number(
+        validated, "smart_skip_720p_max_size_mb"
+    )
+    validated["smart_skip_720p_max_bitrate_bps"] = validate_optional_bitrate(
+        validated, "smart_skip_720p_max_bitrate"
+    )
+    validated["smart_skip_1080p_height"] = validate_positive_int(
+        validated, "smart_skip_1080p_height"
+    )
+    validated["smart_skip_1080p_max_size_mb"] = validate_optional_positive_number(
+        validated, "smart_skip_1080p_max_size_mb"
+    )
+    validated["smart_skip_1080p_max_bitrate_bps"] = validate_optional_bitrate(
+        validated, "smart_skip_1080p_max_bitrate"
+    )
     validated["enable_sample_preflight"] = validate_bool(
         validated, "enable_sample_preflight"
+    )
+    validated["sample_preflight_codecs"] = validate_string_list(
+        validated, "sample_preflight_codecs"
+    )
+    validated["sample_preflight_min_duration_seconds"] = (
+        validate_optional_positive_number(
+            validated, "sample_preflight_min_duration_seconds"
+        )
     )
     validated["sample_preflight_seconds"] = validate_optional_positive_number(
         validated, "sample_preflight_seconds"
@@ -185,6 +246,9 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
     if validated["sample_preflight_min_ratio"] >= 1:
         raise ConfigError("sample_preflight_min_ratio must be less than 1")
     validated["parallel_jobs"] = validate_positive_int(validated, "parallel_jobs")
+    validated["error_log_line_count"] = validate_positive_int(
+        validated, "error_log_line_count"
+    )
     validated["supported_extensions"] = validate_extensions(
         validated, "supported_extensions"
     )
@@ -268,6 +332,15 @@ def parse_bitrate(value: str, key: str) -> int:
     if bitrate <= 0:
         raise ConfigError(f"{key} must be greater than zero")
     return bitrate
+
+
+def validate_optional_bitrate(config: dict[str, Any], key: str) -> int | None:
+    value = config.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ConfigError(f"{key} must be a bitrate string like 1200k or null")
+    return parse_bitrate(value, key)
 
 
 def validate_extensions(config: dict[str, Any], key: str) -> set[str]:
@@ -541,40 +614,75 @@ def should_compress(
     ):
         return False, f"below min duration ({duration:.1f}s)"
 
-    reason = should_skip_by_resolution_and_bitrate(metadata, file_size_mb)
+    reason = should_skip_by_resolution_and_bitrate(metadata, file_size_mb, config)
     if reason is not None:
         return False, reason
 
     if codec in config["skip_if_codec"]:
         if min_file_size_mb is not None and file_size_mb <= min_file_size_mb:
             return False, f"codec {codec} and file is already small enough"
-        if min_file_size_mb is None and file_size_mb < 20:
+        default_size_mb = config["skip_codec_default_max_size_mb"]
+        if default_size_mb is not None and file_size_mb < default_size_mb:
             return False, f"codec {codec} and file is already small enough"
 
     return True, "compression enabled for all inputs"
 
 
 def should_skip_by_resolution_and_bitrate(
-    metadata: dict[str, Any], file_size_mb: float
+    metadata: dict[str, Any], file_size_mb: float, config: dict[str, Any]
 ) -> str | None:
     height = metadata["height"]
     bit_rate = metadata["bit_rate"] or 0
     duration = metadata["duration"]
     file_size_bytes = int(file_size_mb * 1024 * 1024)
+    short_duration = config["smart_skip_short_duration_seconds"]
+    low_resolution_height = config["smart_skip_low_resolution_height"]
+    low_resolution_size_mb = config["smart_skip_low_resolution_size_mb"]
+    max_480p_height = config["smart_skip_480p_height"]
+    max_480p_bitrate = config["smart_skip_480p_max_bitrate_bps"]
+    max_720p_height = config["smart_skip_720p_height"]
+    max_720p_size_mb = config["smart_skip_720p_max_size_mb"]
+    max_720p_bitrate = config["smart_skip_720p_max_bitrate_bps"]
+    max_1080p_height = config["smart_skip_1080p_height"]
+    max_1080p_size_mb = config["smart_skip_1080p_max_size_mb"]
+    max_1080p_bitrate = config["smart_skip_1080p_max_bitrate_bps"]
 
-    if duration is not None and duration < 15:
+    if (
+        short_duration is not None
+        and duration is not None
+        and duration < short_duration
+    ):
         return f"short clip ({duration:.1f}s)"
 
-    if height <= 480 and file_size_mb < 15:
+    if (
+        low_resolution_size_mb is not None
+        and height <= low_resolution_height
+        and file_size_mb < low_resolution_size_mb
+    ):
         return f"low resolution and already small ({human_size(file_size_bytes)})"
 
-    if height <= 480 and bit_rate and bit_rate < 1_200_000:
-        return f"480p bitrate already low ({bit_rate / 1_000_000:.2f} Mbps)"
+    if height <= max_480p_height and bit_rate and max_480p_bitrate is not None:
+        if bit_rate < max_480p_bitrate:
+            return f"480p bitrate already low ({bit_rate / 1_000_000:.2f} Mbps)"
 
-    if height <= 720 and file_size_mb < 20 and bit_rate and bit_rate < 2_500_000:
+    if (
+        height <= max_720p_height
+        and max_720p_size_mb is not None
+        and max_720p_bitrate is not None
+        and file_size_mb < max_720p_size_mb
+        and bit_rate
+        and bit_rate < max_720p_bitrate
+    ):
         return f"720p bitrate already low ({bit_rate / 1_000_000:.2f} Mbps)"
 
-    if height <= 1080 and file_size_mb < 25 and bit_rate and bit_rate < 4_500_000:
+    if (
+        height <= max_1080p_height
+        and max_1080p_size_mb is not None
+        and max_1080p_bitrate is not None
+        and file_size_mb < max_1080p_size_mb
+        and bit_rate
+        and bit_rate < max_1080p_bitrate
+    ):
         return f"1080p bitrate already reasonable ({bit_rate / 1_000_000:.2f} Mbps)"
 
     return None
@@ -588,7 +696,7 @@ def run_sample_preflight_if_enabled(
 ) -> str | None:
     if not config["enable_sample_preflight"]:
         return None
-    if not should_run_sample_preflight(metadata):
+    if not should_run_sample_preflight(metadata, config):
         return None
 
     duration = metadata["duration"]
@@ -615,13 +723,14 @@ def run_sample_preflight_if_enabled(
     return None
 
 
-def should_run_sample_preflight(metadata: dict[str, Any]) -> bool:
+def should_run_sample_preflight(metadata: dict[str, Any], config: dict[str, Any]) -> bool:
     duration = metadata["duration"]
     if duration is None or duration <= 0:
         return False
-    if duration <= 15:
+    min_duration = config["sample_preflight_min_duration_seconds"]
+    if min_duration is not None and duration <= min_duration:
         return False
-    return metadata["codec"] == "hevc"
+    return metadata["codec"] in config["sample_preflight_codecs"]
 
 
 def compress_sample(
@@ -641,7 +750,10 @@ def compress_sample(
         text=True,
     )
     if result.returncode != 0:
-        detail = last_stderr_lines(result.stderr) or "sample ffmpeg failed"
+        detail = (
+            last_stderr_lines(result.stderr, config["error_log_line_count"])
+            or "sample ffmpeg failed"
+        )
         raise EncodeError(f"sample preflight failed: {detail}")
     if not sample_output_path.exists() or sample_output_path.stat().st_size <= 0:
         raise EncodeError("sample preflight did not produce a valid output file")
@@ -738,7 +850,10 @@ def compress_video(
         text=True,
     )
     if result.returncode != 0:
-        detail = last_stderr_lines(result.stderr) or "ffmpeg failed"
+        detail = (
+            last_stderr_lines(result.stderr, config["error_log_line_count"])
+            or "ffmpeg failed"
+        )
         raise EncodeError(detail)
     if not temp_output_path.exists() or temp_output_path.stat().st_size <= 0:
         raise EncodeError("ffmpeg did not produce a valid output file")
@@ -835,7 +950,7 @@ def human_size(num_bytes: int) -> str:
     return f"{size:.1f} TB"
 
 
-def last_stderr_lines(stderr: str, line_count: int = 8) -> str:
+def last_stderr_lines(stderr: str, line_count: int) -> str:
     lines = [line for line in stderr.strip().splitlines() if line.strip()]
     return "\n".join(lines[-line_count:])
 
