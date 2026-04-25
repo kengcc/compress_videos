@@ -7,6 +7,8 @@ import json
 import os
 import shutil
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +26,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "audio_mode": "aac",
     "audio_bitrate": "128k",
     "skip_if_codec": [],
+    "skip_existing_outputs": True,
+    "enable_smart_skip": True,
+    "enable_sample_preflight": False,
+    "sample_preflight_seconds": 8,
+    "sample_preflight_min_ratio": 0.98,
+    "parallel_jobs": 1,
     "supported_extensions": [".mp4", ".mov", ".avi", ".mkv", ".m4v"],
 }
 
@@ -54,6 +62,7 @@ class RunLogger:
         self.log_path = log_path
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self._file = self.log_path.open("a", encoding="utf-8")
+        self._lock = threading.Lock()
 
     def close(self) -> None:
         self._file.close()
@@ -61,9 +70,10 @@ class RunLogger:
     def log(self, message: str) -> None:
         timestamp = datetime.now().isoformat(timespec="seconds")
         line = f"{timestamp} {message}"
-        print(line, flush=True)
-        self._file.write(f"{line}\n")
-        self._file.flush()
+        with self._lock:
+            print(line, flush=True)
+            self._file.write(f"{line}\n")
+            self._file.flush()
 
 
 LOGGER: RunLogger | None = None
@@ -90,9 +100,7 @@ def main() -> int:
     log(f"[SCAN] Found {len(files)} supported files")
 
     try:
-        for input_path in files:
-            result = process_file(input_path, config)
-            results.append(result)
+        results = process_files(files, config)
     except KeyboardInterrupt:
         log("\n[ERROR] Interrupted; completed outputs were left intact")
         log_summary(results)
@@ -157,6 +165,26 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
         validated["audio_bitrate"], "audio_bitrate"
     )
     validated["skip_if_codec"] = validate_string_list(validated, "skip_if_codec")
+    validated["skip_existing_outputs"] = validate_bool(
+        validated, "skip_existing_outputs"
+    )
+    validated["enable_smart_skip"] = validate_bool(validated, "enable_smart_skip")
+    validated["enable_sample_preflight"] = validate_bool(
+        validated, "enable_sample_preflight"
+    )
+    validated["sample_preflight_seconds"] = validate_optional_positive_number(
+        validated, "sample_preflight_seconds"
+    )
+    if validated["sample_preflight_seconds"] is None:
+        raise ConfigError("sample_preflight_seconds must be a positive number")
+    validated["sample_preflight_min_ratio"] = validate_optional_positive_number(
+        validated, "sample_preflight_min_ratio"
+    )
+    if validated["sample_preflight_min_ratio"] is None:
+        raise ConfigError("sample_preflight_min_ratio must be a positive number")
+    if validated["sample_preflight_min_ratio"] >= 1:
+        raise ConfigError("sample_preflight_min_ratio must be less than 1")
+    validated["parallel_jobs"] = validate_positive_int(validated, "parallel_jobs")
     validated["supported_extensions"] = validate_extensions(
         validated, "supported_extensions"
     )
@@ -216,6 +244,13 @@ def validate_choice(config: dict[str, Any], key: str, choices: set[str]) -> str:
     if value not in choices:
         allowed = ", ".join(sorted(choices))
         raise ConfigError(f"{key} must be one of: {allowed}")
+    return value
+
+
+def validate_bool(config: dict[str, Any], key: str) -> bool:
+    value = config.get(key)
+    if not isinstance(value, bool):
+        raise ConfigError(f"{key} must be true or false")
     return value
 
 
@@ -281,12 +316,38 @@ def discover_video_files(input_dir: Path, extensions: set[str]) -> list[Path]:
     )
 
 
+def process_files(files: list[Path], config: dict[str, Any]) -> list[ProcessResult]:
+    parallel_jobs = config["parallel_jobs"]
+    if parallel_jobs <= 1 or len(files) <= 1:
+        return [process_file(input_path, config) for input_path in files]
+
+    log(f"[PARALLEL] Processing with {parallel_jobs} workers")
+    with ThreadPoolExecutor(max_workers=parallel_jobs) as executor:
+        return list(
+            executor.map(lambda input_path: process_file(input_path, config), files)
+        )
+
+
 def process_file(input_path: Path, config: dict[str, Any]) -> ProcessResult:
     final_output_path = config["output_dir"] / input_path.name
     temp_output_path = config["output_dir"] / f"{input_path.stem}.tmp{input_path.suffix}"
+    sample_output_path = (
+        config["output_dir"] / f"{input_path.stem}.sample{input_path.suffix}"
+    )
 
     try:
+        if should_skip_existing_output(input_path, final_output_path, config):
+            log(f"[SKIP] {input_path.name}: existing output found")
+            return ProcessResult(
+                "skipped",
+                input_path,
+                "existing output found",
+                input_path.stat().st_size,
+                final_output_path.stat().st_size,
+            )
+
         remove_if_exists(temp_output_path)
+        remove_if_exists(sample_output_path)
         metadata = probe_video(input_path)
         log_probe(input_path, metadata)
 
@@ -298,6 +359,20 @@ def process_file(input_path: Path, config: dict[str, Any]) -> ProcessResult:
                 "skipped",
                 input_path,
                 reason,
+                input_path.stat().st_size,
+                final_output_path.stat().st_size,
+            )
+
+        preflight_reason = run_sample_preflight_if_enabled(
+            input_path, sample_output_path, metadata, config
+        )
+        if preflight_reason is not None:
+            copy_original(input_path, final_output_path)
+            log(f"[SKIP] {input_path.name}: {preflight_reason}; copied original")
+            return ProcessResult(
+                "skipped",
+                input_path,
+                preflight_reason,
                 input_path.stat().st_size,
                 final_output_path.stat().st_size,
             )
@@ -319,7 +394,20 @@ def process_file(input_path: Path, config: dict[str, Any]) -> ProcessResult:
     except OSError as exc:
         log(f"[ERROR] {input_path.name}: {exc}")
         remove_if_exists(temp_output_path)
+        remove_if_exists(sample_output_path)
         return ProcessResult("failed", input_path, str(exc))
+    finally:
+        remove_if_exists(sample_output_path)
+
+
+def should_skip_existing_output(
+    input_path: Path, final_output_path: Path, config: dict[str, Any]
+) -> bool:
+    if not config["skip_existing_outputs"]:
+        return False
+    if not final_output_path.exists() or final_output_path.stat().st_size <= 0:
+        return False
+    return final_output_path.stat().st_mtime >= input_path.stat().st_mtime
 
 
 def probe_video(path: Path) -> dict[str, Any]:
@@ -434,34 +522,34 @@ def parse_optional_int(*values: Any) -> int | None:
 def should_compress(
     path: Path, metadata: dict[str, Any], config: dict[str, Any]
 ) -> tuple[bool, str]:
-    # Skip logic intentionally disabled so every supported input is processed.
-    # The previous heuristics are left here commented out for easy restoration.
-    #
-    # file_size_mb = path.stat().st_size / (1024 * 1024)
-    # min_file_size_mb = config["min_file_size_mb"]
-    # min_duration_seconds = config["min_duration_seconds"]
-    # duration = metadata["duration"]
-    # codec = metadata["codec"]
-    #
-    # if min_file_size_mb is not None and file_size_mb < min_file_size_mb:
-    #     return False, f"below min file size ({human_size(path.stat().st_size)})"
-    #
-    # if (
-    #     min_duration_seconds is not None
-    #     and duration is not None
-    #     and duration < min_duration_seconds
-    # ):
-    #     return False, f"below min duration ({duration:.1f}s)"
-    #
-    # reason = should_skip_by_resolution_and_bitrate(metadata, file_size_mb)
-    # if reason is not None:
-    #     return False, reason
-    #
-    # if codec in config["skip_if_codec"]:
-    #     if min_file_size_mb is not None and file_size_mb <= min_file_size_mb:
-    #         return False, f"codec {codec} and file is already small enough"
-    #     if min_file_size_mb is None and file_size_mb < 20:
-    #         return False, f"codec {codec} and file is already small enough"
+    if not config["enable_smart_skip"]:
+        return True, "compression enabled for all inputs"
+
+    file_size_mb = path.stat().st_size / (1024 * 1024)
+    min_file_size_mb = config["min_file_size_mb"]
+    min_duration_seconds = config["min_duration_seconds"]
+    duration = metadata["duration"]
+    codec = metadata["codec"]
+
+    if min_file_size_mb is not None and file_size_mb < min_file_size_mb:
+        return False, f"below min file size ({human_size(path.stat().st_size)})"
+
+    if (
+        min_duration_seconds is not None
+        and duration is not None
+        and duration < min_duration_seconds
+    ):
+        return False, f"below min duration ({duration:.1f}s)"
+
+    reason = should_skip_by_resolution_and_bitrate(metadata, file_size_mb)
+    if reason is not None:
+        return False, reason
+
+    if codec in config["skip_if_codec"]:
+        if min_file_size_mb is not None and file_size_mb <= min_file_size_mb:
+            return False, f"codec {codec} and file is already small enough"
+        if min_file_size_mb is None and file_size_mb < 20:
+            return False, f"codec {codec} and file is already small enough"
 
     return True, "compression enabled for all inputs"
 
@@ -490,6 +578,73 @@ def should_skip_by_resolution_and_bitrate(
         return f"1080p bitrate already reasonable ({bit_rate / 1_000_000:.2f} Mbps)"
 
     return None
+
+
+def run_sample_preflight_if_enabled(
+    input_path: Path,
+    sample_output_path: Path,
+    metadata: dict[str, Any],
+    config: dict[str, Any],
+) -> str | None:
+    if not config["enable_sample_preflight"]:
+        return None
+    if not should_run_sample_preflight(metadata):
+        return None
+
+    duration = metadata["duration"]
+    sample_seconds = min(config["sample_preflight_seconds"], duration)
+    if sample_seconds <= 0:
+        return None
+
+    compress_sample(input_path, sample_output_path, sample_seconds, metadata, config)
+    sample_size = sample_output_path.stat().st_size
+    projected_size = int(sample_size * (duration / sample_seconds))
+    input_size = input_path.stat().st_size
+    ratio = projected_size / input_size
+    log(
+        f"[PREFLIGHT] {input_path.name}: sample projects "
+        f"{human_size(projected_size)} from {human_size(input_size)}"
+    )
+
+    if ratio >= config["sample_preflight_min_ratio"]:
+        return (
+            "sample preflight did not predict useful savings "
+            f"({ratio:.0%} of original)"
+        )
+
+    return None
+
+
+def should_run_sample_preflight(metadata: dict[str, Any]) -> bool:
+    duration = metadata["duration"]
+    if duration is None or duration <= 0:
+        return False
+    if duration <= 15:
+        return False
+    return metadata["codec"] == "hevc"
+
+
+def compress_sample(
+    input_path: Path,
+    sample_output_path: Path,
+    sample_seconds: float,
+    metadata: dict[str, Any],
+    config: dict[str, Any],
+) -> None:
+    command = build_ffmpeg_command(input_path, sample_output_path, metadata, config)
+    command.insert(-1, "-t")
+    command.insert(-1, f"{sample_seconds:.3f}")
+    result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = last_stderr_lines(result.stderr) or "sample ffmpeg failed"
+        raise EncodeError(f"sample preflight failed: {detail}")
+    if not sample_output_path.exists() or sample_output_path.stat().st_size <= 0:
+        raise EncodeError("sample preflight did not produce a valid output file")
 
 
 def build_ffmpeg_command(

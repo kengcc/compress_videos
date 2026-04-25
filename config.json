@@ -9,5 +9,11 @@
   "audio_mode": "aac",
   "audio_bitrate": "128k",
   "skip_if_codec": [],
+  "skip_existing_outputs": true,
+  "enable_smart_skip": true,
+  "enable_sample_preflight": false,
+  "sample_preflight_seconds": 8,
+  "sample_preflight_min_ratio": 0.98,
+  "parallel_jobs": 1,
   "supported_extensions": [".mp4", ".mov", ".avi", ".mkv", ".m4v"]
 }

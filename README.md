@@ -56,14 +56,20 @@ Current configuration:
 {
   "input_dir": "./input",
   "output_dir": "./output",
-  "min_file_size_mb": 15,
-  "min_duration_seconds": 10,
+  "min_file_size_mb": null,
+  "min_duration_seconds": null,
   "max_height": 1080,
   "crf": 23,
   "preset": "medium",
   "audio_mode": "aac",
   "audio_bitrate": "128k",
   "skip_if_codec": [],
+  "skip_existing_outputs": true,
+  "enable_smart_skip": true,
+  "enable_sample_preflight": false,
+  "sample_preflight_seconds": 8,
+  "sample_preflight_min_ratio": 0.98,
+  "parallel_jobs": 1,
   "supported_extensions": [".mp4", ".mov", ".avi", ".mkv", ".m4v"]
 }
 ```
@@ -72,8 +78,10 @@ Important options:
 
 - `input_dir`: folder containing source videos.
 - `output_dir`: folder for compressed or copied videos and run logs.
-- `min_file_size_mb`: skip files smaller than this value before encoding.
-- `min_duration_seconds`: skip files shorter than this value before encoding.
+- `min_file_size_mb`: skip files smaller than this value before encoding, or
+  `null` to disable this specific rule.
+- `min_duration_seconds`: skip files shorter than this value before encoding, or
+  `null` to disable this specific rule.
 - `max_height`: downscale videos taller than this height.
 - `crf`: x265 quality value. Lower means higher quality and larger files.
 - `preset`: x265 encode speed/efficiency preset.
@@ -84,14 +92,27 @@ Important options:
   cap used by `auto`.
 - `skip_if_codec`: optional codec names to skip only when the file is already
   small enough.
+- `skip_existing_outputs`: skip an input when a newer non-empty output file with
+  the same name already exists.
+- `enable_smart_skip`: skip files that are likely to waste encode time because
+  they are already short, small, low-resolution, or low-bitrate.
+- `enable_sample_preflight`: for HEVC inputs, encode a short sample first and
+  skip the full encode if the sample does not predict useful savings.
+- `sample_preflight_seconds`: number of seconds encoded when sample preflight is
+  enabled.
+- `sample_preflight_min_ratio`: sample preflight skips the full encode when the
+  projected output is at least this fraction of the original size.
+- `parallel_jobs`: number of videos to process at the same time. Keep this low
+  because x265 already uses multiple CPU threads per file.
 - `supported_extensions`: file extensions scanned in the input folder.
 
 ## Skip Heuristics
 
-The compressor avoids wasting time on files that are already small or low-bitrate:
+When `enable_smart_skip` is true, the compressor avoids wasting time on files
+that are already small or low-bitrate:
 
-- files shorter than `min_duration_seconds`
-- files smaller than `min_file_size_mb`
+- files shorter than `min_duration_seconds`, when configured
+- files smaller than `min_file_size_mb`, when configured
 - 360p or 480p clips that are already small
 - 480p clips with very low bitrate
 - 720p clips with low bitrate and modest file size
@@ -99,6 +120,11 @@ The compressor avoids wasting time on files that are already small or low-bitrat
 
 These are the main guards that keep the encoder focused on files that are likely
 to shrink.
+
+For reruns, `skip_existing_outputs` is usually the fastest safe option because
+it avoids reprocessing files that already have an output. Set it to `false`
+when you intentionally want to recompress existing outputs after changing
+quality or skip settings.
 
 ## Outcomes
 
