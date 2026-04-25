@@ -1,0 +1,25 @@
+# Video inputs and generated outputs
+input/
+output/
+
+# Python cache and local environments
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.tmp.*
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,0 +1,13 @@
+{
+  "input_dir": "./input",
+  "output_dir": "./output",
+  "min_file_size_mb": null,
+  "min_duration_seconds": null,
+  "max_height": 1080,
+  "crf": 22,
+  "preset": "slow",
+  "audio_mode": "auto",
+  "audio_bitrate": "128k",
+  "skip_if_codec": ["hevc"],
+  "supported_extensions": [".mp4", ".mov", ".avi", ".mkv", ".m4v"]
+}
