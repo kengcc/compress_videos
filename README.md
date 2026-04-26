@@ -6,6 +6,22 @@ The script probes each supported video, decides whether it should be compressed,
 then writes the final file to the configured output directory. If compression
 does not reduce the file size, the original file is copied instead.
 
+## Scripts
+
+The main entry point is [`compress_videos.py`](compress_videos.py), but this
+repository also includes a few helper scripts for organizing media files:
+
+- [`rename_input_videos.py`](rename_input_videos.py): rename files in `input/`
+  based on their creation time or normalize filenames that begin with spaced
+  dates like `yyyy mm dd...`.
+- [`check filename dates.py`](check%20filename%20dates.py): scan year-named
+  folders and report files whose filename date differs from metadata by more
+  than 5 days.
+- [`rename_postprocessing_filenames.py`](rename_postprocessing_filenames.py):
+  rename media files in year-named folders to the `yyyymmdd_hhmmss_xxx`
+  format after comparing filename dates with metadata timestamps.
+- [`update_date.sh`](update_date.sh): shell helper for updating file dates.
+
 ## Requirements
 
 - Python 3.10 or newer
