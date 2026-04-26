@@ -19,7 +19,10 @@ repository also includes a few helper scripts for organizing media files:
   than 5 days.
 - [`rename_postprocessing_filenames.py`](rename_postprocessing_filenames.py):
   rename media files in year-named folders to the `yyyymmdd_hhmmss_xxx`
-  format after comparing filename dates with metadata timestamps.
+  format after comparing filename dates with metadata timestamps. It uses the
+  metadata time when the filename date is within 60 days of the file's created
+  date, and falls back to `000000` when metadata is missing or the gap is
+  larger.
 - [`update_date.sh`](update_date.sh): shell helper for updating file dates.
 
 ## Requirements

@@ -44,6 +44,7 @@ SUPPORTED_EXTENSIONS = {
     ".avif",
     ".webp",
 }
+METADATA_DATE_THRESHOLD_DAYS = 60
 YEAR_FOLDER_RE = re.compile(r"^\d{4}")
 FILENAME_DATE_RE = re.compile(
     r"^(?P<year>\d{4})-(?P<month>\d{2})(?:-(?P<day>\d{2}))?(?P<rest>.*)$"
@@ -118,7 +119,7 @@ def main() -> int:
             difference_days = abs(
                 (metadata_created_at.date() - filename_date.date()).days
             )
-            use_metadata_timestamp = difference_days <= 60
+            use_metadata_timestamp = difference_days <= METADATA_DATE_THRESHOLD_DAYS
             items.append(
                 RenameItem(
                     path=path,
@@ -129,7 +130,10 @@ def main() -> int:
                     rename_reason=(
                         "used metadata timestamp"
                         if use_metadata_timestamp
-                        else "filename date differed by more than 60 days"
+                        else (
+                            "filename date differed by more than "
+                            f"{METADATA_DATE_THRESHOLD_DAYS} days"
+                        )
                     ),
                 )
             )
