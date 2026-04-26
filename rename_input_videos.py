@@ -14,6 +14,10 @@ from typing import Any
 
 SUPPORTED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v"}
 DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{1,2}(?:-\d{2})?")
+SPACED_DATE_PREFIX_RE = re.compile(
+    r"^(?P<year>\d{4}) (?P<month>\d{2}) (?P<day>\d{2})(?P<rest>.*)$"
+)
+YEAR_SPACE_PREFIX_RE = re.compile(r"^\d{4} ")
 NUMBERED_NAME_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2}) (?P<num>\d+)(?P<ext>\.[^.]+)$")
 
 
@@ -31,19 +35,61 @@ def main() -> int:
         return 1
 
     files = discover_input_files(input_dir)
-    candidates = [path for path in files if not has_date_prefix(path.name)]
-
-    if not candidates:
-        print("[DONE] No files needed renaming")
-        return 0
-
-    items = [build_video_item(path) for path in candidates]
-    items.sort(key=lambda item: (item.date_key, item.created_at, item.path.name.lower()))
-
     used_numbers = existing_numbered_names(files)
     renamed = 0
-    skipped = len(files) - len(candidates)
+    skipped = 0
     failed = 0
+
+    # Rename rules:
+    # - "yyyy mm dd..." -> "yyyy-mm-dd..." and keep the rest of the name.
+    # - Names that already look date-prefixed with "yyyy-mm..." are skipped.
+    # - Other names starting with "yyyy " are skipped.
+    # - Everything else is renamed from the file creation time.
+    normalized_targets: dict[Path, str] = {}
+    creation_candidates: list[Path] = []
+    for path in files:
+        target_name = normalize_spaced_date_prefix(path.name)
+        if target_name is not None:
+            normalized_targets[path] = target_name
+            continue
+        if has_date_prefix(path.name) or starts_with_year_space_prefix(path.name):
+            skipped += 1
+            continue
+        creation_candidates.append(path)
+
+    for path, target_name in normalized_targets.items():
+        target_path = path.with_name(target_name)
+
+        if target_path.exists():
+            print(f"[SKIP] {path.name}: target already exists: {target_path.name}")
+            skipped += 1
+            continue
+
+        try:
+            path.rename(target_path)
+        except OSError as exc:
+            print(f"[ERROR] {path.name}: rename failed: {exc}")
+            failed += 1
+            continue
+
+        normalized_match = NUMBERED_NAME_RE.match(target_path.name)
+        if normalized_match is not None:
+            used_numbers.setdefault(normalized_match.group("date"), set()).add(
+                int(normalized_match.group("num"))
+            )
+
+        renamed += 1
+        print(f"[RENAMED] {path.name} -> {target_path.name}")
+
+    if not creation_candidates:
+        print(
+            f"[DONE] renamed={renamed} skipped={skipped} failed={failed} "
+            f"from={len(files)} files"
+        )
+        return 1 if failed else 0
+
+    items = [build_video_item(path) for path in creation_candidates]
+    items.sort(key=lambda item: (item.date_key, item.created_at, item.path.name.lower()))
 
     for item in items:
         next_number = next_available_number(
@@ -93,6 +139,17 @@ def discover_input_files(input_dir: Path) -> list[Path]:
 
 def has_date_prefix(name: str) -> bool:
     return bool(DATE_PREFIX_RE.match(name))
+
+
+def normalize_spaced_date_prefix(name: str) -> str | None:
+    match = SPACED_DATE_PREFIX_RE.match(name)
+    if match is None:
+        return None
+    return f"{match.group('year')}-{match.group('month')}-{match.group('day')}{match.group('rest')}"
+
+
+def starts_with_year_space_prefix(name: str) -> bool:
+    return bool(YEAR_SPACE_PREFIX_RE.match(name))
 
 
 def build_video_item(path: Path) -> VideoItem:
